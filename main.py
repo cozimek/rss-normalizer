@@ -15,13 +15,12 @@ USER_AGENT = (
 
 HEADERS = {
     "User-Agent": USER_AGENT,
-    "Accept": "application/atom+xml,application/rss+xml,application/xml,text/xml,*/*",
-    "Accept-Encoding": "identity",  # critical for some feeds
+    "Accept": "application/rss+xml,application/xml,text/xml,*/*",
 }
 
 
-def log(msg):
-    print(f"[RSS-NORMALIZER] {msg}", flush=True)
+def log(msg: str):
+    print(f"[RSS-NORMALIZER] {msg}")
 
 
 def html_to_text(raw_html: str) -> str:
@@ -56,45 +55,30 @@ def parse_feed(url: str = Query(..., description="RSS or Atom feed URL")):
         log(f"HTTP status: {response.status_code}")
         log(f"Content-Type: {response.headers.get('Content-Type')}")
         log(f"Response length: {len(response.content)} bytes")
+        log(f"First 1000 chars of response:\n{response.text[:1000]}")
 
         response.raise_for_status()
-
-        head = response.content[:1000].decode("utf-8", errors="ignore")
-        log("First 1000 chars of response:")
-        log(head)
 
         feed = feedparser.parse(response.content)
 
         log(f"Feedparser version: {feedparser.__version__}")
         log(f"Feed bozo: {feed.bozo}")
-        log(f"Bozo exception: {feed.bozo_exception}")
+
+        if feed.bozo:
+            log(f"Bozo exception: {feed.bozo_exception}")
+
         log(f"Feed keys: {list(feed.feed.keys())}")
         log(f"Entry count: {len(feed.entries)}")
-
-        if not feed.entries:
-            return {
-                "success": False,
-                "error": "Feed parsed but contains no entries",
-                "debug": {
-                    "bozo": feed.bozo,
-                    "bozo_exception": str(feed.bozo_exception),
-                    "feed_keys": list(feed.feed.keys()),
-                },
-            }
 
         items = []
 
         for entry in feed.entries[:10]:
-            log(f"Entry keys: {list(entry.keys())}")
-
             raw_content = ""
 
             if entry.get("content"):
                 raw_content = entry.content[0].value
             elif entry.get("summary"):
                 raw_content = entry.summary
-            elif entry.get("description"):
-                raw_content = entry.description
 
             content_text = html_to_text(raw_content)
 
@@ -105,7 +89,7 @@ def parse_feed(url: str = Query(..., description="RSS or Atom feed URL")):
                 "published": iso_utc(entry.get("published_parsed")),
                 "updated": iso_utc(entry.get("updated_parsed")),
                 "content": content_text,
-                "categories": [t.term for t in entry.get("tags", []) if hasattr(t, "term")],
+                "categories": [t.term for t in entry.get("tags", [])],
             }
 
             items.append(item)
@@ -115,8 +99,6 @@ def parse_feed(url: str = Query(..., description="RSS or Atom feed URL")):
             "feed": {
                 "title": feed.feed.get("title"),
                 "link": feed.feed.get("link"),
-                "subtitle": feed.feed.get("subtitle"),
-                "updated": feed.feed.get("updated"),
             },
             "count": len(items),
             "items": items,
