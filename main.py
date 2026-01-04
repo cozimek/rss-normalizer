@@ -15,7 +15,7 @@ USER_AGENT = (
 
 HEADERS = {
     "User-Agent": USER_AGENT,
-    "Accept": "application/rss+xml,application/xml,text/xml,*/*",
+    "Accept": "application/rss+xml,application/atom+xml,application/xml,text/xml,*/*",
 }
 
 
@@ -43,23 +43,46 @@ def iso_utc(dt_struct):
     return datetime(*dt_struct[:6], tzinfo=timezone.utc).isoformat()
 
 
-def extract_author(entry):
-    # RSS-style
-    if entry.get("author"):
-        return entry.author
+def extract_feed_link(feed):
+    """
+    Works for both RSS and Atom feeds
+    """
+    if feed.feed.get("link"):
+        return feed.feed.get("link")
 
-    # Atom-style
-    if entry.get("authors") and len(entry.authors) > 0:
-        return entry.authors[0].get("name")
+    links = feed.feed.get("links", [])
+    for l in links:
+        if l.get("rel") == "alternate" and l.get("href"):
+            return l.get("href")
 
     return None
+
+
+def extract_entry_content(entry):
+    """
+    Defensive extraction that supports RSS + Atom
+    """
+    if entry.get("content"):
+        return entry.content[0].value
+
+    if entry.get("summary"):
+        return entry.summary
+
+    if entry.get("description"):
+        return entry.description
+
+    return ""
+
+
+@app.get("/health")
+def health():
+    return {"ok": True}
 
 
 @app.get("/feed")
 def parse_feed(url: str = Query(..., description="RSS or Atom feed URL")):
     try:
-        # Fetch feed with controlled headers
-        response = requests.get(url, headers=HEADERS, timeout=15)
+        response = requests.get(url, headers=HEADERS, timeout=20)
         response.raise_for_status()
 
         feed = feedparser.parse(response.content)
@@ -67,32 +90,29 @@ def parse_feed(url: str = Query(..., description="RSS or Atom feed URL")):
         items = []
 
         for entry in feed.entries[:10]:
-            raw_content = ""
-
-            if entry.get("content"):
-                raw_content = entry.content[0].value
-            elif entry.get("summary"):
-                raw_content = entry.summary
-
+            raw_content = extract_entry_content(entry)
             content_text = html_to_text(raw_content)
 
+            # Do NOT drop valid entries just because content is short
             item = {
                 "title": entry.get("title"),
                 "link": entry.get("link"),
-                "author": extract_author(entry),
+                "author": entry.get("author"),
                 "published": iso_utc(entry.get("published_parsed")),
                 "updated": iso_utc(entry.get("updated_parsed")),
                 "content": content_text,
                 "categories": [t.term for t in entry.get("tags", [])],
             }
 
-            items.append(item)
+            # Require at least title + link to include
+            if item["title"] and item["link"]:
+                items.append(item)
 
         return {
             "success": True,
             "feed": {
                 "title": feed.feed.get("title"),
-                "link": feed.feed.get("link") or feed.feed.get("id"),
+                "link": extract_feed_link(feed),
             },
             "count": len(items),
             "items": items,
