@@ -1,79 +1,80 @@
 from fastapi import FastAPI, Query
-import requests
 import feedparser
+import requests
+from bs4 import BeautifulSoup
+import html
 from datetime import datetime, timezone
 
 app = FastAPI()
 
-# Modern Chrome User-Agent (important for WordPress / Cloudflare)
-DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/rss+xml,application/xml;q=0.9,*/*;q=0.8",
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/121.0.0.0 Safari/537.36"
+)
+
+HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "application/rss+xml,application/xml,text/xml,*/*",
 }
 
-TIMEOUT_SECONDS = 15
+
+def html_to_text(raw_html: str) -> str:
+    if not raw_html:
+        return ""
+
+    decoded = html.unescape(raw_html)
+    soup = BeautifulSoup(decoded, "lxml")
+
+    for tag in soup(["script", "style", "noscript", "iframe", "img"]):
+        tag.decompose()
+
+    text = soup.get_text(separator="\n")
+
+    lines = [line.strip() for line in text.splitlines()]
+    cleaned = "\n".join(line for line in lines if line)
+
+    return cleaned.strip()
 
 
-def iso_utc_from_struct(dt_struct):
-    """Safely convert feedparser date struct to ISO 8601 UTC"""
+def iso_utc(dt_struct):
     if not dt_struct:
         return None
-    try:
-        return (
-            datetime.fromtimestamp(
-                datetime(*dt_struct[:6], tzinfo=timezone.utc).timestamp(),
-                tz=timezone.utc,
-            )
-            .isoformat()
-        )
-    except Exception:
-        return None
-
-
-@app.get("/")
-def health():
-    return {"status": "ok", "service": "rss-normalizer"}
+    return datetime(*dt_struct[:6], tzinfo=timezone.utc).isoformat()
 
 
 @app.get("/feed")
 def parse_feed(url: str = Query(..., description="RSS feed URL")):
     try:
-        # Fetch RSS feed
-        resp = requests.get(
-            url,
-            headers=DEFAULT_HEADERS,
-            timeout=TIMEOUT_SECONDS,
-        )
-        resp.raise_for_status()
+        # Fetch RSS manually so we control headers
+        response = requests.get(url, headers=HEADERS, timeout=15)
+        response.raise_for_status()
 
-        # Parse RSS
-        feed = feedparser.parse(resp.text)
+        feed = feedparser.parse(response.content)
 
         items = []
-        for entry in feed.entries:
 
-            # Prefer full content, fallback to summary/description
-            content = None
-            if "content" in entry and entry.content:
-                content = entry.content[0].value
-            elif "summary" in entry:
-                content = entry.summary
+        for entry in feed.entries[:10]:
+            raw_content = ""
 
-            items.append({
+            if entry.get("content"):
+                raw_content = entry.content[0].value
+            elif entry.get("summary"):
+                raw_content = entry.summary
+
+            content_text = html_to_text(raw_content)
+
+            item = {
                 "title": entry.get("title"),
                 "link": entry.get("link"),
                 "author": entry.get("author"),
-                "published": iso_utc_from_struct(entry.get("published_parsed")),
-                "updated": iso_utc_from_struct(entry.get("updated_parsed")),
-                "content": content,
-                "categories": [
-                    tag.term for tag in entry.get("tags", []) if hasattr(tag, "term")
-                ],
-            })
+                "published": iso_utc(entry.get("published_parsed")),
+                "updated": iso_utc(entry.get("updated_parsed")),
+                "content": content_text,
+                "categories": [t.term for t in entry.get("tags", [])],
+            }
+
+            items.append(item)
 
         return {
             "success": True,
