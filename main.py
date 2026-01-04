@@ -43,40 +43,12 @@ def iso_utc(dt_struct):
     return datetime(*dt_struct[:6], tzinfo=timezone.utc).isoformat()
 
 
-def extract_feed_link(feed):
+def is_atom(xml_bytes: bytes) -> bool:
     """
-    Works for both RSS and Atom feeds
+    Fast, explicit Atom detection
     """
-    if feed.feed.get("link"):
-        return feed.feed.get("link")
-
-    links = feed.feed.get("links", [])
-    for l in links:
-        if l.get("rel") == "alternate" and l.get("href"):
-            return l.get("href")
-
-    return None
-
-
-def extract_entry_content(entry):
-    """
-    Defensive extraction that supports RSS + Atom
-    """
-    if entry.get("content"):
-        return entry.content[0].value
-
-    if entry.get("summary"):
-        return entry.summary
-
-    if entry.get("description"):
-        return entry.description
-
-    return ""
-
-
-@app.get("/health")
-def health():
-    return {"ok": True}
+    head = xml_bytes[:500].lower()
+    return b"<feed" in head and b"atom" in head
 
 
 @app.get("/feed")
@@ -85,15 +57,73 @@ def parse_feed(url: str = Query(..., description="RSS or Atom feed URL")):
         response = requests.get(url, headers=HEADERS, timeout=20)
         response.raise_for_status()
 
-        feed = feedparser.parse(response.content)
+        raw_xml = response.content
+        atom = is_atom(raw_xml)
+
+        feed = feedparser.parse(raw_xml)
 
         items = []
 
+        # ---------------------------
+        # ATOM PARSING (explicit)
+        # ---------------------------
+        if atom:
+            for entry in feed.entries[:10]:
+                raw_content = ""
+
+                if entry.get("content"):
+                    raw_content = entry.content[0].value
+                elif entry.get("summary"):
+                    raw_content = entry.summary
+
+                content_text = html_to_text(raw_content)
+
+                item = {
+                    "title": entry.get("title"),
+                    "link": entry.get("link"),
+                    "author": (
+                        entry.get("author")
+                        or entry.get("authors", [{}])[0].get("name")
+                    ),
+                    "published": iso_utc(entry.get("published_parsed")),
+                    "updated": iso_utc(entry.get("updated_parsed")),
+                    "content": content_text,
+                    "categories": [t.term for t in entry.get("tags", [])],
+                }
+
+                if item["title"] and item["link"]:
+                    items.append(item)
+
+            feed_link = None
+            for l in feed.feed.get("links", []):
+                if l.get("rel") == "alternate":
+                    feed_link = l.get("href")
+
+            return {
+                "success": True,
+                "feed": {
+                    "title": feed.feed.get("title"),
+                    "link": feed_link,
+                },
+                "count": len(items),
+                "items": items,
+            }
+
+        # ---------------------------
+        # RSS PARSING (existing logic)
+        # ---------------------------
         for entry in feed.entries[:10]:
-            raw_content = extract_entry_content(entry)
+            raw_content = ""
+
+            if entry.get("content"):
+                raw_content = entry.content[0].value
+            elif entry.get("summary"):
+                raw_content = entry.summary
+            elif entry.get("description"):
+                raw_content = entry.description
+
             content_text = html_to_text(raw_content)
 
-            # Do NOT drop valid entries just because content is short
             item = {
                 "title": entry.get("title"),
                 "link": entry.get("link"),
@@ -104,7 +134,6 @@ def parse_feed(url: str = Query(..., description="RSS or Atom feed URL")):
                 "categories": [t.term for t in entry.get("tags", [])],
             }
 
-            # Require at least title + link to include
             if item["title"] and item["link"]:
                 items.append(item)
 
@@ -112,7 +141,7 @@ def parse_feed(url: str = Query(..., description="RSS or Atom feed URL")):
             "success": True,
             "feed": {
                 "title": feed.feed.get("title"),
-                "link": extract_feed_link(feed),
+                "link": feed.feed.get("link"),
             },
             "count": len(items),
             "items": items,
