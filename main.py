@@ -43,10 +43,22 @@ def iso_utc(dt_struct):
     return datetime(*dt_struct[:6], tzinfo=timezone.utc).isoformat()
 
 
+def extract_author(entry):
+    # RSS-style
+    if entry.get("author"):
+        return entry.author
+
+    # Atom-style
+    if entry.get("authors") and len(entry.authors) > 0:
+        return entry.authors[0].get("name")
+
+    return None
+
+
 @app.get("/feed")
-def parse_feed(url: str = Query(..., description="RSS feed URL")):
+def parse_feed(url: str = Query(..., description="RSS or Atom feed URL")):
     try:
-        # Fetch RSS manually so we control headers
+        # Fetch feed with controlled headers
         response = requests.get(url, headers=HEADERS, timeout=15)
         response.raise_for_status()
 
@@ -67,7 +79,7 @@ def parse_feed(url: str = Query(..., description="RSS feed URL")):
             item = {
                 "title": entry.get("title"),
                 "link": entry.get("link"),
-                "author": entry.get("author"),
+                "author": extract_author(entry),
                 "published": iso_utc(entry.get("published_parsed")),
                 "updated": iso_utc(entry.get("updated_parsed")),
                 "content": content_text,
@@ -80,7 +92,7 @@ def parse_feed(url: str = Query(..., description="RSS feed URL")):
             "success": True,
             "feed": {
                 "title": feed.feed.get("title"),
-                "link": feed.feed.get("link"),
+                "link": feed.feed.get("link") or feed.feed.get("id"),
             },
             "count": len(items),
             "items": items,
