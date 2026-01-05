@@ -46,6 +46,21 @@ def iso_utc(dt_struct):
     return datetime(*dt_struct[:6], tzinfo=timezone.utc).isoformat()
 
 
+# -------------------------
+# 🔥 KEEPALIVE ENDPOINT
+# -------------------------
+@app.get("/ping")
+def ping():
+    return {
+        "status": "ok",
+        "service": "rss-normalizer",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+
+# -------------------------
+# RSS / ATOM NORMALIZER
+# -------------------------
 @app.get("/feed")
 def parse_feed(url: str = Query(..., description="RSS or Atom feed URL")):
     try:
@@ -64,7 +79,7 @@ def parse_feed(url: str = Query(..., description="RSS or Atom feed URL")):
         log(f"Feedparser version: {feedparser.__version__}")
         log(f"Feed bozo: {feed.bozo}")
 
-        if feed.bozo:
+        if feed.bozo and hasattr(feed, "bozo_exception"):
             log(f"Bozo exception: {feed.bozo_exception}")
 
         log(f"Feed keys: {list(feed.feed.keys())}")
